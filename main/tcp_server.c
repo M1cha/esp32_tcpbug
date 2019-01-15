@@ -33,12 +33,14 @@
 #define EXAMPLE_WIFI_PASS CONFIG_WIFI_PASSWORD
 
 #define PORT 3333
+#define USE_AP_MODE 1
 
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
 static EventGroupHandle_t wifi_event_group;
 
 static const int IPV4_GOTIP_BIT = BIT0;
 static const int IPV6_GOTIP_BIT = BIT1;
+static const int AP_STARTED_BIT = BIT2;
 
 static const char *TAG_SERVER = "server";
 static const char *TAG_MAIN = "main";
@@ -70,6 +72,12 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
 
         char *ip6 = ip6addr_ntoa(&event->event_info.got_ip6.ip6_info.ip);
         ESP_LOGI(TAG_MAIN, "IPv6: %s", ip6);
+    case SYSTEM_EVENT_AP_START:
+        xEventGroupSetBits(wifi_event_group, AP_STARTED_BIT);
+        break;
+    case SYSTEM_EVENT_AP_STOP:
+        xEventGroupClearBits(wifi_event_group, AP_STARTED_BIT);
+        break;
     default:
         break;
     }
@@ -81,6 +89,23 @@ static void initialise_wifi(void)
     tcpip_adapter_init();
     wifi_event_group = xEventGroupCreate();
     ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
+
+#if USE_AP_MODE
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = "CRASH-AP",
+            .max_connection = 4,
+            .authmode = WIFI_AUTH_OPEN,
+        },
+    };
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
+    ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
+    ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_AP) );
+    ESP_ERROR_CHECK( esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config) );
+    ESP_ERROR_CHECK( esp_wifi_start() );
+#else
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
     ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
@@ -94,11 +119,16 @@ static void initialise_wifi(void)
     ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK( esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
     ESP_ERROR_CHECK( esp_wifi_start() );
+#endif
 }
 
 static void wait_for_ip(void)
 {
+#if USE_AP_MODE
+    uint32_t bits = AP_STARTED_BIT ;
+#else
     uint32_t bits = IPV4_GOTIP_BIT | IPV6_GOTIP_BIT ;
+#endif
 
     ESP_LOGI(TAG_MAIN, "Waiting for AP connection...");
     xEventGroupWaitBits(wifi_event_group, bits, false, true, portMAX_DELAY);
