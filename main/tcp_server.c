@@ -40,7 +40,6 @@ static EventGroupHandle_t wifi_event_group;
 static const int IPV4_GOTIP_BIT = BIT0;
 static const int IPV6_GOTIP_BIT = BIT1;
 
-static const char *TAG_CLIENT = "client";
 static const char *TAG_SERVER = "server";
 static const char *TAG_MAIN = "main";
 
@@ -157,6 +156,7 @@ static void tcp_server_task(void *pvParameters)
         }
         ESP_LOGI(TAG_SERVER, "Socket accepted");
 
+        int wait_for_close = 0;
         while (1) {
             int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
             // Error occured during receiving
@@ -169,6 +169,9 @@ static void tcp_server_task(void *pvParameters)
                 ESP_LOGI(TAG_SERVER, "Connection closed");
                 break;
             }
+            else if (wait_for_close) {
+                ESP_LOGI(TAG_SERVER, "ignore data after shutdown-WR");
+            }
             // Data received
             else {
                 ESP_LOGI(TAG_SERVER, "Received %d bytes", len);
@@ -178,70 +181,19 @@ static void tcp_server_task(void *pvParameters)
                     ESP_LOGE(TAG_SERVER, "Error occured during sending: errno %d", errno);
                     break;
                 }
+
+                err = shutdown(sock, SHUT_WR);
+                if (err < 0) {
+                    ESP_LOGE(TAG_SERVER, "Error occured during shutdown-WR: errno %d", errno);
+                    break;
+                }
+                wait_for_close = 1;
             }
         }
 
         if (sock != -1) {
             ESP_LOGE(TAG_SERVER, "Shutting down socket and restarting...");
-            shutdown(sock, SHUT_WR);
             shutdown(sock, SHUT_RDWR);
-            close(sock);
-        }
-    }
-    vTaskDelete(NULL);
-}
-
-static const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
-static const char *payload = "Message from ESP32 ";
-static void tcp_client_task(void *pvParameters)
-{
-    char rx_buffer[128];
-
-    while (1) {
-        struct sockaddr_in6 destAddr;
-        destAddr.sin6_addr = in6addr_loopback;
-        destAddr.sin6_family = AF_INET6;
-        destAddr.sin6_port = htons(PORT);
-
-        int sock =  socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-        if (sock < 0) {
-            ESP_LOGE(TAG_CLIENT, "Unable to create socket: errno %d", errno);
-            break;
-        }
-        ESP_LOGI(TAG_CLIENT, "Socket created");
-
-        int err = connect(sock, (struct sockaddr *)&destAddr, sizeof(destAddr));
-        if (err != 0) {
-            ESP_LOGE(TAG_CLIENT, "Socket unable to connect: errno %d", errno);
-            goto close;
-        }
-        ESP_LOGI(TAG_CLIENT, "Successfully connected");
-
-        for (size_t i=0; i<2; i++) {
-            int err = send(sock, payload, strlen(payload), 0);
-            if (err < 0) {
-                ESP_LOGE(TAG_CLIENT, "Error occured during sending: errno %d", errno);
-                break;
-            }
-
-            int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
-            // Error occured during receiving
-            if (len < 0) {
-                ESP_LOGE(TAG_CLIENT, "recv failed: errno %d", errno);
-                break;
-            }
-            // Data received
-            else {
-                ESP_LOGI(TAG_CLIENT, "Received %d bytes", len);
-            }
-
-            vTaskDelay(2000 / portTICK_PERIOD_MS);
-        }
-
-close:
-        if (sock != -1) {
-            ESP_LOGE(TAG_CLIENT, "Shutting down socket and restarting...");
-            shutdown(sock, 0);
             close(sock);
         }
     }
@@ -254,7 +206,5 @@ void app_main(void)
     initialise_wifi();
     wait_for_ip();
 
-    xTaskCreate(tcp_server_task, "tcp_server", 8096, NULL, 5, NULL);
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-    xTaskCreate(tcp_client_task, "tcp_client", 8096, NULL, 5, NULL);
+    xTaskCreate(tcp_server_task, "tcp_server", 8096, NULL, ESP_TASK_MAIN_PRIO, NULL);
 }
